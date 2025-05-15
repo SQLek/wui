@@ -1,9 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
-	"go/format"
 	"io/ioutil"
 	"math"
 	"os"
@@ -58,15 +55,22 @@ type event struct {
 	name    string
 }
 
+type Designer struct {
+	w                *wui.Window
+	active           node
+	preview          *wui.PaintBox
+	updateProperties func()
+}
+
 func main() {
 	// Create a temporary directory to save our preview builds in.
-	if dir, err := ioutil.TempDir("", "wui_designer_preview_builds"); err == nil {
+	if dir, err := os.MkdirTemp("", "wui_designer_preview_builds"); err == nil {
 		buildDir = dir
 		defer os.Remove(dir)
 	}
 	// After closing the designer, delete all preview builds from this session.
 	defer func() {
-		if files, err := ioutil.ReadDir(buildDir); err == nil {
+		if files, err := os.ReadDir(buildDir); err == nil {
 			for _, file := range files {
 				if !file.IsDir() &&
 					strings.HasSuffix(file.Name(), ".exe") &&
@@ -90,9 +94,9 @@ func main() {
 		innerX, innerY int
 		// active is the highlighted control whose properties are shown in the
 		// tool bar.
-		active node
+		//active node
 		// TODO Move preview somewhere else.
-		preview = wui.NewPaintBox()
+
 	)
 
 	theWindow := defaultWindow()
@@ -103,11 +107,17 @@ func main() {
 	italic, _ := wui.NewFont(wui.FontDesc{Name: "Tahoma", Height: -11, Italic: true})
 	underlined, _ := wui.NewFont(wui.FontDesc{Name: "Tahoma", Height: -11, Underlined: true})
 	strikedOut, _ := wui.NewFont(wui.FontDesc{Name: "Tahoma", Height: -11, StrikedOut: true})
+
 	w := wui.NewWindow()
 	w.SetFont(font)
 	w.SetTitle("wui Designer")
 	w.SetBackground(wui.ColorButtonFace)
 	w.SetInnerSize(800, 600)
+
+	d := Designer{
+		w:       w,
+		preview: wui.NewPaintBox(),
+	}
 
 	menu := wui.NewMainMenu()
 	fileMenu := wui.NewMenu("&File")
@@ -138,391 +148,83 @@ func main() {
 	// TODO Doing this after the menu does not work.
 	//w.SetInnerSize(800, 600)
 
-	type uiProp struct {
-		panel     *wui.Panel
-		setter    string
-		update    func()
-		rightType func(t reflect.Type) bool
-	}
-	// updateProperties refreshes the visible UI properties by reading the
-	// values in from the active control.
-	var updateProperties func()
-
-	const propMargin = 2
-
-	boolPanel := func(parent wui.Container, name string) (*wui.CheckBox, *wui.Panel) {
-		c := wui.NewCheckBox()
-		c.SetText(name)
-		c.SetBounds(100, propMargin, 95, 17)
-		p := wui.NewPanel()
-		p.SetSize(195, c.Height()+2*propMargin)
-		parent.Add(p)
-		p.Add(c)
-		return c, p
-	}
-
-	boolProp := func(name, getterFunc string) uiProp {
-		c, p := boolPanel(w, name)
-		setterFunc := "Set" + getterFunc // By convention.
-		c.SetOnChange(func(on bool) {
-			reflect.ValueOf(active).MethodByName(setterFunc).Call(
-				[]reflect.Value{reflect.ValueOf(on)},
-			)
-			updateProperties()
-			preview.Paint()
-		})
-		update := func() {
-			on := reflect.ValueOf(active).MethodByName(getterFunc).Call(nil)[0].Bool()
-			if c.Checked() != on {
-				c.SetChecked(on)
-			}
-		}
-		rightType := func(t reflect.Type) bool {
-			return t.Kind() == reflect.Bool
-		}
-		return uiProp{
-			panel:     p,
-			setter:    setterFunc,
-			update:    update,
-			rightType: rightType,
-		}
-	}
-
-	intPanel := func(parent wui.Container, name string, minmax ...int) (*wui.IntUpDown, *wui.Panel) {
-		n := wui.NewIntUpDown()
-		n.SetOnTabFocus(n.SelectAll)
-		if len(minmax) == 2 {
-			n.SetMinMax(minmax[0], minmax[1])
-		}
-		n.SetBounds(100, propMargin, 90, 22)
-		l := wui.NewLabel()
-		l.SetText(name)
-		l.SetAlignment(wui.AlignRight)
-		// TODO This -1 might have to do with the below TODO about the IntUpDown
-		// height.
-		l.SetBounds(0, propMargin-1, 95, n.Height())
-		p := wui.NewPanel()
-		// TODO We add +2 to the height because for some reason setting the
-		// height of an IntUpDown does not include the borders. Fix this in the
-		// wui library.
-		p.SetSize(195, n.Height()+2+2*propMargin)
-		parent.Add(p)
-		p.Add(l)
-		p.Add(n)
-		return n, p
-	}
-
-	intProp := func(name, getterFunc string, minmax ...int) uiProp {
-		n, p := intPanel(w, name, minmax...)
-		setterFunc := "Set" + getterFunc // By convention.
-		n.SetOnValueChange(func(v int) {
-			if active == nil {
-				return
-			}
-			if m, ok := reflect.TypeOf(active).MethodByName(setterFunc); ok {
-				reflect.ValueOf(active).MethodByName(setterFunc).Call(
-					[]reflect.Value{reflect.ValueOf(v).Convert(m.Type.In(1))},
-				)
-				updateProperties()
-				preview.Paint()
-			}
-		})
-		update := func() {
-			v := reflect.ValueOf(active).MethodByName(getterFunc).Call(nil)[0]
-			i := v.Convert(reflect.TypeOf(0)).Int()
-			newValue := int(i)
-			if n.Value() != newValue {
-				n.SetValue(newValue)
-			}
-		}
-		rightType := func(t reflect.Type) bool {
-			return t.Kind() == reflect.Int || t.Kind() == reflect.Uint8
-		}
-		return uiProp{
-			panel:     p,
-			setter:    setterFunc,
-			update:    update,
-			rightType: rightType,
-		}
-	}
-
-	floatProp := func(name, getterFunc string, minmax ...float64) uiProp {
-		setterFunc := "Set" + getterFunc // By convention.
-		n := wui.NewFloatUpDown()
-		n.SetOnTabFocus(n.SelectAll)
-		if len(minmax) == 2 {
-			n.SetMinMax(minmax[0], minmax[1])
-		}
-		n.SetPrecision(6)
-		n.SetBounds(100, propMargin, 90, 22)
-		l := wui.NewLabel()
-		l.SetText(name)
-		l.SetAlignment(wui.AlignRight)
-		// TODO This -1 might have to do with the below TODO about the
-		// FloatUpDown height.
-		l.SetBounds(0, propMargin-1, 95, n.Height())
-		p := wui.NewPanel()
-		// TODO We add +2 to the height because for some reason setting the
-		// height of an FloatUpDown does not include the borders. Fix this in
-		// the wui library.
-		p.SetSize(195, n.Height()+2+2*propMargin)
-		w.Add(p)
-		p.Add(l)
-		p.Add(n)
-		n.SetOnValueChange(func(v float64) {
-			if active == nil {
-				return
-			}
-			if m, ok := reflect.TypeOf(active).MethodByName(setterFunc); ok {
-				reflect.ValueOf(active).MethodByName(setterFunc).Call(
-					[]reflect.Value{reflect.ValueOf(v).Convert(m.Type.In(1))},
-				)
-				updateProperties()
-				preview.Paint()
-			}
-		})
-		update := func() {
-			v := reflect.ValueOf(active).MethodByName(getterFunc).Call(nil)[0]
-			newValue := v.Convert(reflect.TypeOf(0.0)).Float()
-			if n.Value() != newValue {
-				n.SetValue(newValue)
-			}
-		}
-		rightType := func(t reflect.Type) bool {
-			return t.Kind() == reflect.Float32 || t.Kind() == reflect.Float64
-		}
-		return uiProp{
-			panel:     p,
-			setter:    setterFunc,
-			update:    update,
-			rightType: rightType,
-		}
-	}
-
-	stringPanel := func(parent wui.Container, name string) (*wui.EditLine, *wui.Panel) {
-		t := wui.NewEditLine()
-		t.SetOnTabFocus(t.SelectAll)
-		t.SetBounds(100, propMargin, 90, 22)
-		l := wui.NewLabel()
-		l.SetText(name)
-		l.SetAlignment(wui.AlignRight)
-		l.SetBounds(0, propMargin-1, 95, t.Height())
-		p := wui.NewPanel()
-		p.SetSize(195, t.Height()+2*propMargin)
-		parent.Add(p)
-		p.Add(l)
-		p.Add(t)
-		return t, p
-	}
-
-	stringProp := func(name, getterFunc string) uiProp {
-		t, p := stringPanel(w, name)
-		setterFunc := "Set" + getterFunc // By convention.
-		t.SetOnTextChange(func() {
-			if active == nil {
-				return
-			}
-			if _, ok := reflect.TypeOf(active).MethodByName(setterFunc); ok {
-				reflect.ValueOf(active).MethodByName(setterFunc).Call(
-					[]reflect.Value{reflect.ValueOf(t.Text())},
-				)
-				updateProperties()
-				preview.Paint()
-			}
-		})
-		update := func() {
-			text := reflect.ValueOf(active).MethodByName(getterFunc).Call(nil)[0].String()
-			if t.Text() != text {
-				t.SetText(text)
-			}
-		}
-		rightType := func(t reflect.Type) bool {
-			return t.Kind() == reflect.String
-		}
-		return uiProp{
-			panel:     p,
-			setter:    setterFunc,
-			update:    update,
-			rightType: rightType,
-		}
-	}
-
-	stringListProp := func(name, getterFunc string) uiProp {
-		setterFunc := "Set" + getterFunc // By convention.
-		l := wui.NewLabel()
-		l.SetBounds(10, 5, 180, 13)
-		l.SetText(name)
-		l.SetAlignment(wui.AlignCenter)
-		list := wui.NewTextEdit()
-		list.SetBounds(10, 20, 180, 80)
-		list.SetAnchors(wui.AnchorMinAndMax, wui.AnchorMinAndMax)
-		p := wui.NewPanel()
-		p.SetSize(195, list.Height()+2*propMargin)
-		w.Add(p)
-		p.Add(l)
-		p.Add(list)
-		list.SetOnTextChange(func() {
-			if active == nil {
-				return
-			}
-			if _, ok := reflect.TypeOf(active).MethodByName(setterFunc); ok {
-				items := strings.Split(list.Text(), "\r\n")
-				items = removeEmptyStrings(items)
-				l.SetText(fmt.Sprintf("%s (%d)", name, len(items)))
-				reflect.ValueOf(active).MethodByName(setterFunc).Call(
-					[]reflect.Value{reflect.ValueOf(items)},
-				)
-				start, end := list.CursorPosition()
-				updateProperties()
-				list.SetSelection(start, end)
-				preview.Paint()
-			}
-		})
-		update := func() {
-			items := reflect.ValueOf(active).MethodByName(getterFunc).Call(nil)[0].Interface().([]string)
-			l.SetText(fmt.Sprintf("%s (%d)", name, len(items)))
-			newText := strings.Join(items, "\r\n") + "\r\n"
-			if list.Text() != newText {
-				list.SetText(newText)
-			}
-		}
-		rightType := func(t reflect.Type) bool {
-			// NOTE that currently there is only []string, we might have to
-			// check for the underlying slice type if we support others in the
-			// future.
-			return t.Kind() == reflect.Slice
-		}
-		return uiProp{
-			panel:     p,
-			setter:    setterFunc,
-			update:    update,
-			rightType: rightType,
-		}
-	}
-
-	// enumNames must correspond to the respective const, the order is important
-	// and the consts must be iota'd, i.e. start with 0 and increment by 1.
-	enumProp := func(name, getterFunc string, enumNames ...string) uiProp {
-		setterFunc := "Set" + getterFunc // By convention.
-		c := wui.NewComboBox()
-		for _, name := range enumNames {
-			c.AddItem(name)
-		}
-		c.SetBounds(100, propMargin, 90, 22)
-		l := wui.NewLabel()
-		l.SetText(name)
-		l.SetAlignment(wui.AlignRight)
-		l.SetBounds(0, propMargin-1, 95, c.Height())
-		p := wui.NewPanel()
-		p.SetSize(195, c.Height()+2*propMargin)
-		w.Add(p)
-		p.Add(l)
-		p.Add(c)
-		c.SetOnChange(func(index int) {
-			m, ok := reflect.TypeOf(active).MethodByName(setterFunc)
-			if ok {
-				reflect.ValueOf(active).MethodByName(setterFunc).Call(
-					[]reflect.Value{reflect.ValueOf(index).Convert(m.Type.In(1))},
-				)
-				updateProperties()
-				preview.Paint()
-			}
-		})
-		update := func() {
-			v := reflect.ValueOf(active).MethodByName(getterFunc).Call(nil)[0]
-			index := int(v.Convert(reflect.TypeOf(0)).Int())
-			if c.SelectedIndex() != index {
-				c.SetSelectedIndex(index)
-			}
-		}
-		rightType := func(t reflect.Type) bool {
-			return true
-		}
-		return uiProp{
-			panel:     p,
-			setter:    setterFunc,
-			update:    update,
-			rightType: rightType,
-		}
-	}
-
 	uiProps := []uiProp{
-		stringProp("Title", "Title"),
-		stringProp("Text", "Text"),
-		enumProp("Window State", "State",
+		d.stringProp("Title", "Title"),
+		d.stringProp("Text", "Text"),
+		d.enumProp("Window State", "State",
 			"Normal", "Maximized", "Minimized",
 		),
-		boolProp("Min Button", "HasMinButton"),
-		boolProp("Max Button", "HasMaxButton"),
-		boolProp("Close Button", "HasCloseButton"),
-		boolProp("Has Border", "HasBorder"),
-		boolProp("Resizable", "Resizable"),
-		intProp("Alpha", "Alpha", 0, 255),
-		boolProp("Enabled", "Enabled"),
-		boolProp("Visible", "Visible"),
-		enumProp("Horizontal Anchor", "HorizontalAnchor",
+		d.boolProp("Min Button", "HasMinButton"),
+		d.boolProp("Max Button", "HasMaxButton"),
+		d.boolProp("Close Button", "HasCloseButton"),
+		d.boolProp("Has Border", "HasBorder"),
+		d.boolProp("Resizable", "Resizable"),
+		d.intProp("Alpha", "Alpha", 0, 255),
+		d.boolProp("Enabled", "Enabled"),
+		d.boolProp("Visible", "Visible"),
+		d.enumProp("Horizontal Anchor", "HorizontalAnchor",
 			"Left", "Right", "Center", "Left+Right", "Left+Center", "Right+Center",
 		),
-		enumProp("Vertical Anchor", "VerticalAnchor",
+		d.enumProp("Vertical Anchor", "VerticalAnchor",
 			"Top", "Bottom", "Center", "Top+Bottom", "Top+Center", "Bottom+Center",
 		),
-		intProp("X", "X"),
-		intProp("Y", "Y"),
-		intProp("Width", "Width"),
-		intProp("Height", "Height"),
-		intProp("Inner X", "InnerX"),
-		intProp("Inner Y", "InnerY"),
-		intProp("Inner Width", "InnerWidth"),
-		intProp("Inner Height", "InnerHeight"),
-		enumProp("Alignment", "Alignment",
+		d.intProp("X", "X"),
+		d.intProp("Y", "Y"),
+		d.intProp("Width", "Width"),
+		d.intProp("Height", "Height"),
+		d.intProp("Inner X", "InnerX"),
+		d.intProp("Inner Y", "InnerY"),
+		d.intProp("Inner Width", "InnerWidth"),
+		d.intProp("Inner Height", "InnerHeight"),
+		d.enumProp("Alignment", "Alignment",
 			"Left", "Center", "Right",
 		),
-		boolProp("Checked", "Checked"),
-		intProp("Arrow Increment", "ArrowIncrement"),
-		intProp("Mouse Increment", "MouseIncrement"),
-		intProp("Min", "Min"),
-		intProp("Max", "Max"),
-		intProp("Value", "Value"),
-		floatProp("Min", "Min"),
-		floatProp("Max", "Max"),
-		floatProp("Value", "Value"),
-		intProp("Cursor Position", "CursorPosition"),
-		intProp("Precision", "Precision", 1, 6),
-		enumProp("Orientation", "Orientation",
+		d.boolProp("Checked", "Checked"),
+		d.intProp("Arrow Increment", "ArrowIncrement"),
+		d.intProp("Mouse Increment", "MouseIncrement"),
+		d.intProp("Min", "Min"),
+		d.intProp("Max", "Max"),
+		d.intProp("Value", "Value"),
+		d.floatProp("Min", "Min"),
+		d.floatProp("Max", "Max"),
+		d.floatProp("Value", "Value"),
+		d.intProp("Cursor Position", "CursorPosition"),
+		d.intProp("Precision", "Precision", 1, 6),
+		d.enumProp("Orientation", "Orientation",
 			"Horizontal", "Vertical",
 		),
-		enumProp("Tick Position", "TickPosition",
+		d.enumProp("Tick Position", "TickPosition",
 			"Right/Bottom", "Left/Top", "Both Sides",
 		),
-		intProp("Tick Frequency", "TickFrequency"),
-		boolProp("Ticks Visible", "TicksVisible"),
-		enumProp("Border Style", "BorderStyle",
+		d.intProp("Tick Frequency", "TickFrequency"),
+		d.boolProp("Ticks Visible", "TicksVisible"),
+		d.enumProp("Border Style", "BorderStyle",
 			"None", "Single Line", "Sunken", "Sunken Thick", "Raised",
 		),
-		intProp("Character Limit", "CharacterLimit", 1, 0x7FFFFFFE),
-		boolProp("Is Password", "IsPassword"),
-		boolProp("Read Only", "ReadOnly"),
-		boolProp("Writes Tabs", "WritesTabs"),
-		stringListProp("Items", "Items"),
-		intProp("Selected Index", "SelectedIndex", -1, math.MaxInt32),
-		boolProp("Vertical", "Vertical"),
-		boolProp("Moves Forever", "MovesForever"),
-		boolProp("Word Wrap", "WordWrap"),
+		d.intProp("Character Limit", "CharacterLimit", 1, 0x7FFFFFFE),
+		d.boolProp("Is Password", "IsPassword"),
+		d.boolProp("Read Only", "ReadOnly"),
+		d.boolProp("Writes Tabs", "WritesTabs"),
+		d.stringListProp("Items", "Items"),
+		d.intProp("Selected Index", "SelectedIndex", -1, math.MaxInt32),
+		d.boolProp("Vertical", "Vertical"),
+		d.boolProp("Moves Forever", "MovesForever"),
+		d.boolProp("Word Wrap", "WordWrap"),
 	}
 
 	fontProps := wui.NewPanel()
 	w.Add(fontProps)
-	useParentFont, useParentFontPanel := boolPanel(fontProps, "Use Parent Font")
-	fontName, fontNamePanel := stringPanel(fontProps, "Name")
+	useParentFont, useParentFontPanel := d.boolPanel(fontProps, "Use Parent Font")
+	fontName, fontNamePanel := d.stringPanel(fontProps, "Name")
 	fontName.SetCharacterLimit(31)
-	fontHeight, fontHeightPanel := intPanel(fontProps, "Height")
-	fontBold, fontBoldPanel := boolPanel(fontProps, "Bold")
+	fontHeight, fontHeightPanel := d.intPanel(fontProps, "Height")
+	fontBold, fontBoldPanel := d.boolPanel(fontProps, "Bold")
 	fontBold.SetFont(bold)
-	fontItalic, fontItalicPanel := boolPanel(fontProps, "Italic")
+	fontItalic, fontItalicPanel := d.boolPanel(fontProps, "Italic")
 	fontItalic.SetFont(italic)
-	fontUnderlined, fontUnderlinedPanel := boolPanel(fontProps, "Underlined")
+	fontUnderlined, fontUnderlinedPanel := d.boolPanel(fontProps, "Underlined")
 	fontUnderlined.SetFont(underlined)
-	fontStrikedOut, fontStrikedOutPanel := boolPanel(fontProps, "StrikedOut")
+	fontStrikedOut, fontStrikedOutPanel := d.boolPanel(fontProps, "StrikedOut")
 	fontStrikedOut.SetFont(strikedOut)
 	for _, p := range []*wui.Panel{
 		useParentFontPanel,
@@ -562,7 +264,7 @@ func main() {
 		fontLabel.SetWidth(fontProps.InnerWidth())
 	}
 	updateFont := func() {
-		f, ok := active.(fonter)
+		f, ok := d.active.(fonter)
 		if !ok {
 			return
 		}
@@ -588,7 +290,7 @@ func main() {
 				f.SetFont(font)
 			}
 		}
-		preview.Paint()
+		d.preview.Paint()
 	}
 	useParentFont.SetOnChange(func(disable bool) { updateFont() })
 	fontName.SetOnTextChange(func() { updateFont() })
@@ -733,9 +435,9 @@ func main() {
 	name.SetBounds(100, 10, 90, 22)
 	w.Add(name)
 
-	preview.SetBounds(200, 0, 400, 600)
-	preview.SetHorizontalAnchor(wui.AnchorMinAndMax)
-	preview.SetVerticalAnchor(wui.AnchorMinAndMax)
+	d.preview.SetBounds(200, 0, 400, 600)
+	d.preview.SetHorizontalAnchor(wui.AnchorMinAndMax)
+	d.preview.SetVerticalAnchor(wui.AnchorMinAndMax)
 	white := wui.RGB(255, 255, 255)
 	black := wui.RGB(0, 0, 0)
 
@@ -746,17 +448,17 @@ func main() {
 	w.Add(editOnPaint)
 
 	name.SetOnTextChange(func() {
-		names[active] = name.Text()
+		names[d.active] = name.Text()
 	})
 	editOnPaint.SetOnClick(func() {
-		p, valid := active.(*wui.PaintBox)
+		p, valid := d.active.(*wui.PaintBox)
 		if !valid {
 			panic("OnPaint only valid for paint boxes")
 		}
 
 		dlg := wui.NewWindow()
-		dlg.SetPosition(w32.ClientToScreen(w32.HWND(preview.Handle()), 0, 0))
-		dlg.SetSize(preview.Size())
+		dlg.SetPosition(w32.ClientToScreen(w32.HWND(d.preview.Handle()), 0, 0))
+		dlg.SetSize(d.preview.Size())
 
 		code := wui.NewTextEdit()
 		font, _ := wui.NewFont(wui.FontDesc{Name: "Courier New", Height: -15})
@@ -796,7 +498,9 @@ func main() {
 		dlg.ShowModal()
 	})
 
-	updateProperties = func() {
+	// updateProperties refreshes the visible UI properties by reading the
+	// values in from the active control.
+	d.updateProperties = func() {
 		for _, prop := range uiProps {
 			if prop.panel.Visible() {
 				prop.update()
@@ -805,13 +509,13 @@ func main() {
 	}
 
 	activate := func(newActive node) {
-		active = newActive
+		d.active = newActive
 
-		name.SetText(names[active])
+		name.SetText(names[d.active])
 		y := name.Y() + name.Height() + propMargin
 
 		for _, prop := range uiProps {
-			m, hasProp := reflect.TypeOf(active).MethodByName(prop.setter)
+			m, hasProp := reflect.TypeOf(d.active).MethodByName(prop.setter)
 			show := hasProp && prop.rightType(m.Type.In(1))
 			prop.panel.SetVisible(show)
 			if show {
@@ -819,15 +523,15 @@ func main() {
 				y += prop.panel.Height()
 			}
 		}
-		updateProperties()
+		d.updateProperties()
 
-		f, hasFont := active.(fonter)
+		f, hasFont := d.active.(fonter)
 		fontProps.SetVisible(hasFont)
 		if hasFont {
 			fontProps.SetY(y)
 			y += fontProps.Height()
 			font := f.Font()
-			if _, isWindow := active.(*wui.Window); isWindow {
+			if _, isWindow := d.active.(*wui.Window); isWindow {
 				useParentFont.SetEnabled(false)
 				useParentFont.SetChecked(false)
 			} else {
@@ -870,7 +574,7 @@ func main() {
 	}
 
 	var xOffset, yOffset int
-	preview.SetOnPaint(func(c *wui.Canvas) {
+	d.preview.SetOnPaint(func(c *wui.Canvas) {
 		// Place the inner top-left at 20,40.
 		xOffset = 20 - (theWindow.InnerX() - theWindow.X())
 		yOffset = 40 - (theWindow.InnerY() - theWindow.Y())
@@ -882,7 +586,7 @@ func main() {
 		innerY = yOffset + topBorderSize
 		inner := makeOffsetDrawer(c, innerX, innerY)
 
-		c.FillRect(0, 0, preview.Width(), preview.Height(), white)
+		c.FillRect(0, 0, d.preview.Width(), d.preview.Height(), white)
 
 		// Clear inner area.
 		c.FillRect(innerX, innerY, innerWidth, innerHeight, wui.RGB(240, 240, 240))
@@ -963,9 +667,9 @@ func main() {
 
 		// Highlight the currently selected child control, except if dragging
 		// it with the mouse.
-		if !dragging() && active != nil && active != theWindow {
-			x, y, w, h := active.Bounds()
-			parent := active.Parent()
+		if !dragging() && d.active != nil && d.active != theWindow {
+			x, y, w, h := d.active.Bounds()
+			parent := d.active.Parent()
 			for parent != theWindow {
 				dx, dy, _, _ := parent.InnerBounds()
 				x += dx
@@ -982,7 +686,7 @@ func main() {
 			drawControl(controlToAdd, c)
 		}
 	})
-	w.Add(preview)
+	w.Add(d.preview)
 
 	var (
 		dragStartX, dragStartY                                  int
@@ -997,10 +701,10 @@ func main() {
 		lastX, lastY = x, y
 
 		if mouseMode == addControl {
-			if contains(preview, x, y) {
+			if contains(d.preview, x, y) {
 				_, _, w, h := controlToAdd.Bounds()
-				relX := x - preview.X()
-				relY := y - preview.Y()
+				relX := x - d.preview.X()
+				relY := y - d.preview.Y()
 				if false {
 					// TODO Align to some nice-looking grid unless Ctrl is held
 					// down for example. NOTE that this right now contains a
@@ -1015,17 +719,17 @@ func main() {
 				relY += templateDy
 				controlToAdd.SetBounds(relX, relY, w, h)
 			}
-			preview.Paint()
+			d.preview.Paint()
 		} else if mouseMode == idleMouse {
 			// See if the cursor is over the edge of the active control. In that
 			// case show the resize cursor and remember what to resize and in
 			// which direction.
-			x -= preview.X()
-			y -= preview.Y()
+			x -= d.preview.X()
+			y -= d.preview.Y()
 			x -= xOffset
 			y -= yOffset
-			nextToDrag = active
-			ax, ay, aw, ah := relativeBounds(active, theWindow)
+			nextToDrag = d.active
+			ax, ay, aw, ah := relativeBounds(d.active, theWindow)
 			const margin = 6
 			corner := func(x, y int) rectangle {
 				return rect(x-margin, y-margin, 2*margin, 2*margin)
@@ -1041,7 +745,7 @@ func main() {
 				bottomLeft  = corner(ax, ay+ah)
 				left        = rect(ax-margin, ay, 2*margin, ah)
 			)
-			if active == theWindow {
+			if d.active == theWindow {
 				// The main window can only be dragged right and bottom so we
 				// reset the other drag areas. They will not be triggered for
 				// the main window.
@@ -1110,8 +814,8 @@ func main() {
 				outerX, outerY, _, _ := theWindow.Bounds()
 				relX := x - (innerX - outerX)
 				relY := y - (innerY - outerY)
-				if theWindow != active &&
-					active == findControlAt(theWindow, relX, relY) {
+				if theWindow != d.active &&
+					d.active == findControlAt(theWindow, relX, relY) {
 					nextDragMouseMode = dragAll
 					w.SetCursor(wui.CursorSizeAll)
 				} else {
@@ -1157,8 +861,8 @@ func main() {
 			case dragAll:
 				nextToDrag.SetBounds(x+dx, y+dy, w, h)
 			}
-			updateProperties()
-			preview.Paint()
+			d.updateProperties()
+			d.preview.Paint()
 		}
 	})
 
@@ -1171,7 +875,7 @@ func main() {
 				templateDy = hy - (y - palette.Y())
 				mouseMode = addControl
 				activate(theWindow)
-				preview.Paint()
+				d.preview.Paint()
 			} else if mouseMode == addControl {
 				innerX, innerY, _, _ := theWindow.InnerBounds()
 				outerX, outerY, _, _ := theWindow.Bounds()
@@ -1189,23 +893,23 @@ func main() {
 				mouseMode = idleMouse
 				name.Focus()
 				name.SelectAll()
-				preview.Paint()
+				d.preview.Paint()
 			} else {
 				dragStartX = x
 				dragStartY = y
 				preResizeX, preResizeY, preResizeWidth, preResizeHeight = nextToDrag.Bounds()
 				mouseMode = nextDragMouseMode
-				if mouseMode == idleMouse && contains(preview, x, y) {
+				if mouseMode == idleMouse && contains(d.preview, x, y) {
 					newActive := findControlAt(
 						theWindow,
-						x-preview.X()-innerX,
-						y-preview.Y()-innerY,
+						x-d.preview.X()-innerX,
+						y-d.preview.Y()-innerY,
 					)
-					if newActive != active {
+					if newActive != d.active {
 						activate(newActive)
 					}
 				}
-				preview.Paint()
+				d.preview.Paint()
 			}
 		}
 	})
@@ -1220,7 +924,7 @@ func main() {
 		//nextDragMouseMode = idleMouse
 		//w.OnMouseMove()(x+1, y)
 		//w.OnMouseMove()(x, y)
-		preview.Paint()
+		d.preview.Paint()
 	})
 
 	workingPath := ""
@@ -1240,7 +944,12 @@ func main() {
 		open.AddFilter("Go file", ".go")
 		if accept, path := open.ExecuteSingleSelection(w); accept {
 			setWorkingPath(path)
-			wui.MessageBoxError("TODO", "Open is not yet implemented")
+			//wui.MessageBoxError("TODO", "Open is not yet implemented")
+			if err := parseFile(theWindow, path); err != nil {
+				wui.MessageBoxError("Error", err.Error())
+			} else {
+				d.preview.Paint()
+			}
 		}
 	})
 
@@ -1274,7 +983,7 @@ func main() {
 
 	previewMenu.SetOnClick(func() {
 		// We place the window such that it lies exactly over our drawing.
-		x, y := w32.ClientToScreen(w32.HWND(w.Handle()), preview.X(), preview.Y())
+		x, y := w32.ClientToScreen(w32.HWND(w.Handle()), d.preview.X(), d.preview.Y())
 		showPreview(w, theWindow, x+xOffset, y+yOffset)
 	})
 
@@ -1285,12 +994,12 @@ func main() {
 	//redoMenu.SetOnClick(func() {})
 
 	deleteMenu.SetOnClick(func() {
-		if active != nil && active != theWindow {
-			c := active.(wui.Control)
-			p := active.Parent()
+		if d.active != nil && d.active != theWindow {
+			c := d.active.(wui.Control)
+			p := d.active.Parent()
 			activate(p)
 			p.Remove(c)
-			preview.Paint()
+			d.preview.Paint()
 		}
 	})
 
@@ -1437,455 +1146,6 @@ func (d *offsetDrawer) SetFont(f *wui.Font) {
 	d.base.SetFont(f)
 }
 
-func drawContainer(container wui.Container, d drawer) {
-	_, _, w, h := container.InnerBounds()
-	d.PushDrawRegion(0, 0, w, h)
-	for _, child := range container.Children() {
-		if f, ok := child.(fontControl); ok {
-			d.SetFont(getFont(f))
-		}
-		drawControl(child, d)
-	}
-	d.PopDrawRegion()
-}
-
-func drawControl(c wui.Control, d drawer) {
-	switch x := c.(type) {
-	case *wui.Button:
-		drawButton(x, d)
-	case *wui.RadioButton:
-		drawRadioButton(x, d)
-	case *wui.CheckBox:
-		drawCheckBox(x, d)
-	case *wui.Panel:
-		drawPanel(x, d)
-	case *wui.Slider:
-		drawSlider(x, d)
-	case *wui.Label:
-		drawLabel(x, d)
-	case *wui.PaintBox:
-		drawPaintBox(x, d)
-	case *wui.EditLine:
-		drawEditLine(x, d)
-	case *wui.IntUpDown:
-		drawIntUpDown(x, d)
-	case *wui.ComboBox:
-		drawComboBox(x, d)
-	case *wui.ProgressBar:
-		drawProgressBar(x, d)
-	case *wui.FloatUpDown:
-		drawFloatUpDown(x, d)
-	case *wui.TextEdit:
-		drawTextEdit(x, d)
-	default:
-		panic("unhandled control type")
-	}
-}
-
-func drawButton(b *wui.Button, d drawer) {
-	x, y, w, h := b.Bounds()
-	if w > 0 && h > 0 {
-		d.DrawRect(x, y, w, h, wui.RGB(240, 240, 240))
-	}
-	if w > 2 && h > 2 {
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(173, 173, 173))
-	}
-	if w > 4 && h > 4 {
-		d.FillRect(x+2, y+2, w-4, h-4, wui.RGB(225, 225, 225))
-	}
-	if w > 6 && h > 6 {
-		d.SetFont(getFont(b))
-		textW, textH := d.TextExtent(b.Text())
-		d.PushDrawRegion(x+3, y+3, w-6, h-6)
-		d.TextOut(x+(w-textW)/2, y+(h-textH)/2, b.Text(), wui.RGB(0, 0, 0))
-		d.PopDrawRegion()
-	}
-}
-
-func drawRadioButton(r *wui.RadioButton, d drawer) {
-	x, y, w, h := r.Bounds()
-	d.PushDrawRegion(x, y, w, h)
-	d.FillRect(x, y, w, h, wui.RGB(240, 240, 240))
-	d.FillEllipse(x, y+(h-13)/2, 13, 13, wui.RGB(255, 255, 255))
-	d.DrawEllipse(x, y+(h-13)/2, 13, 13, wui.RGB(0, 0, 0))
-	if r.Checked() {
-		d.FillEllipse(x+3, y+(h-13)/2+3, 7, 7, wui.RGB(0, 0, 0))
-	}
-	_, textH := d.TextExtent(r.Text())
-	d.TextOut(x+16, y+(h-textH)/2, r.Text(), wui.RGB(0, 0, 0))
-	d.PopDrawRegion()
-}
-
-func drawCheckBox(c *wui.CheckBox, d drawer) {
-	x, y, w, h := c.Bounds()
-	d.PushDrawRegion(x, y, w, h)
-	d.FillRect(x, y, w, h, wui.RGB(240, 240, 240))
-	d.FillRect(x, y+(h-13)/2, 13, 13, wui.RGB(255, 255, 255))
-	d.DrawRect(x, y+(h-13)/2, 13, 13, wui.RGB(0, 0, 0))
-	if c.Checked() {
-		// Draw two lines for the check mark. ✓
-		startX := x + 2
-		startY := y + (h-13)/2 + 6
-		d.Line(startX, startY, startX+3, startY+3, wui.RGB(0, 0, 0))
-		d.Line(startX+3, startY+2, startX+9, startY-4, wui.RGB(0, 0, 0))
-	}
-	_, textH := d.TextExtent(c.Text())
-	d.TextOut(x+16, y+(h-textH)/2, c.Text(), wui.RGB(0, 0, 0))
-	d.PopDrawRegion()
-}
-
-func drawPanel(p *wui.Panel, d drawer) {
-	x, y, w, h := p.Bounds()
-	if w <= 0 || h <= 0 {
-		return
-	}
-	switch p.BorderStyle() {
-	case wui.PanelBorderNone:
-		d.DrawRect(x, y, w, h, wui.RGB(230, 230, 230))
-	case wui.PanelBorderSingleLine:
-		d.DrawRect(x, y, w, h, wui.RGB(100, 100, 100))
-	case wui.PanelBorderRaised:
-		d.Line(x, y, x+w, y, wui.RGB(227, 227, 227))
-		d.Line(x, y, x, y+h, wui.RGB(227, 227, 227))
-		d.Line(x+w-1, y, x+w-1, y+h, wui.RGB(105, 105, 105))
-		d.Line(x, y+h-1, x+w, y+h-1, wui.RGB(105, 105, 105))
-		d.Line(x+1, y+1, x+w-1, y+1, wui.RGB(255, 255, 255))
-		d.Line(x+1, y+1, x+1, y+h-1, wui.RGB(255, 255, 255))
-		d.Line(x+w-2, y+1, x+w-2, y+h-1, wui.RGB(160, 160, 160))
-		d.Line(x+1, y+h-2, x+w-1, y+h-2, wui.RGB(160, 160, 160))
-	case wui.PanelBorderSunken:
-		d.Line(x, y, x+w, y, wui.RGB(160, 160, 160))
-		d.Line(x, y, x, y+h, wui.RGB(160, 160, 160))
-		d.Line(x+w-1, y, x+w-1, y+h, wui.RGB(255, 255, 255))
-		d.Line(x, y+h-1, x+w, y+h-1, wui.RGB(255, 255, 255))
-	case wui.PanelBorderSunkenThick:
-		d.Line(x, y, x+w, y, wui.RGB(160, 160, 160))
-		d.Line(x, y, x, y+h, wui.RGB(160, 160, 160))
-		d.Line(x+w-1, y, x+w-1, y+h, wui.RGB(255, 255, 255))
-		d.Line(x, y+h-1, x+w, y+h-1, wui.RGB(255, 255, 255))
-		d.Line(x+1, y+1, x+w-1, y+1, wui.RGB(105, 105, 105))
-		d.Line(x+1, y+1, x+1, y+h-1, wui.RGB(105, 105, 105))
-		d.Line(x+w-2, y+1, x+w-2, y+h-1, wui.RGB(227, 227, 227))
-		d.Line(x+1, y+h-2, x+w-1, y+h-2, wui.RGB(227, 227, 227))
-	}
-	innerX, innerY, _, _ := p.InnerBounds()
-	drawContainer(p, makeOffsetDrawer(d, innerX, innerY))
-}
-
-func drawSlider(s *wui.Slider, d drawer) {
-	var (
-		drawSlideBar    func(offset int)
-		drawCursorBody  func(offset, size int)
-		drawCursorArrow func(offset int)
-		// drawEndTicks and drawMiddleTicks are only assigned if ticks are
-		// visible for this slider.
-		drawEndTicks    = func(offset int) {}
-		drawMiddleTicks = func(offset int) {}
-	)
-
-	cursorColor := wui.RGB(0, 120, 215)
-	tickColor := wui.RGB(196, 196, 196)
-	slideBarBorder := wui.RGB(214, 214, 214)
-	slideBarBackground := wui.RGB(231, 231, 234)
-
-	x, y, w, h := s.Bounds()
-	if w <= 0 || h <= 0 {
-		return
-	}
-	d.PushDrawRegion(x, y, w, h)
-	defer d.PopDrawRegion()
-	min, max := s.MinMax()
-	innerTickCount := max - min - 1
-	freq := s.TickFrequency()
-	relCursor := s.CursorPosition() - min
-
-	if s.Orientation() == wui.HorizontalSlider {
-		xLeft := x + 13
-		xRight := x + w - 14
-		scale := 1.0 / float64(innerTickCount+1) * float64(xRight-xLeft)
-		if xRight < xLeft {
-			xRight = xLeft
-			scale = 0
-		}
-		xOffset := int(float64(relCursor)*scale + 0.5)
-		cursorCenter := xLeft + xOffset
-
-		drawSlideBar = func(offset int) {
-			if xLeft != xRight {
-				d.DrawRect(x+8, y+offset, w-16, 4, slideBarBorder)
-				d.FillRect(x+9, y+offset+1, w-18, 2, slideBarBackground)
-			}
-		}
-		drawCursorBody = func(offset, size int) {
-			d.FillRect(cursorCenter-5, y+offset, 11, size, cursorColor)
-		}
-		drawCursorArrow = func(offset int) {
-			d.Polygon([]wui.Point{
-				{int32(cursorCenter - 5), int32(y + 15)},
-				{int32(cursorCenter), int32(y + 15 + offset)},
-				{int32(cursorCenter + 5), int32(y + 15)},
-			}, cursorColor)
-		}
-
-		if s.TicksVisible() {
-			drawEndTicks = func(offset int) {
-				d.Line(xLeft, y+offset, xLeft, y+offset+4, tickColor)
-				d.Line(xRight, y+offset, xRight, y+offset+4, tickColor)
-			}
-			drawMiddleTicks = func(offset int) {
-				for i := freq; i <= innerTickCount; i += freq {
-					x := xLeft + int(float64(i)*scale+0.5)
-					d.Line(x, y+offset, x, y+offset+3, tickColor)
-				}
-			}
-		}
-	} else {
-		yTop := y + 13
-		yBottom := y + h - 14
-		scale := 1.0 / float64(innerTickCount+1) * float64(yBottom-yTop)
-		if yBottom < yTop {
-			yBottom = yTop
-			scale = 0
-		}
-		yOffset := int(float64(relCursor)*scale + 0.5)
-		cursorCenter := yTop + yOffset
-
-		drawSlideBar = func(offset int) {
-			if yTop != yBottom {
-				d.DrawRect(x+offset, y+8, 4, h-16, slideBarBorder)
-				d.FillRect(x+offset+1, y+9, 2, h-18, slideBarBackground)
-			}
-		}
-		drawCursorBody = func(offset, size int) {
-			d.FillRect(x+offset, cursorCenter-5, size, 11, cursorColor)
-		}
-		drawCursorArrow = func(offset int) {
-			d.Polygon([]wui.Point{
-				{int32(x + 15), int32(cursorCenter - 5)},
-				{int32(x + 15 + offset), int32(cursorCenter)},
-				{int32(x + 15), int32(cursorCenter + 5)},
-			}, cursorColor)
-		}
-
-		if s.TicksVisible() {
-			drawEndTicks = func(offset int) {
-				d.Line(x+offset, yTop, x+offset+4, yTop, tickColor)
-				d.Line(x+offset, yBottom, x+offset+4, yBottom, tickColor)
-			}
-			drawMiddleTicks = func(offset int) {
-				for i := freq; i <= innerTickCount; i += freq {
-					y := yTop + int(float64(i)*scale+0.5)
-					d.Line(x+offset, y, x+offset+3, y, tickColor)
-				}
-			}
-		}
-	}
-
-	switch s.TickPosition() {
-	case wui.TicksBottomOrRight:
-		drawSlideBar(8)
-		drawCursorBody(2, 14)
-		drawCursorArrow(5)
-		drawEndTicks(22)
-		drawMiddleTicks(22)
-	case wui.TicksTopOrLeft:
-		drawSlideBar(18)
-		drawCursorBody(15, 14)
-		drawCursorArrow(-5)
-		drawEndTicks(5)
-		drawMiddleTicks(6)
-	case wui.TicksOnBothSides:
-		drawSlideBar(19)
-		drawCursorBody(10, 21)
-		drawEndTicks(5)
-		drawEndTicks(33)
-		drawMiddleTicks(6)
-		drawMiddleTicks(33)
-	default:
-		panic("unhandled tick position")
-	}
-}
-
-func drawLabel(l *wui.Label, d drawer) {
-	x, y, w, h := l.Bounds()
-	textW, textH := d.TextExtent(l.Text())
-	textX := x
-	switch l.Alignment() {
-	case wui.AlignCenter:
-		textX = x + (w-textW)/2
-	case wui.AlignRight:
-		textX = x + w - textW
-	}
-	d.PushDrawRegion(x, y, w, h)
-	d.TextOut(textX, y+(h-textH)/2, l.Text(), wui.RGB(0, 0, 0))
-	d.PopDrawRegion()
-}
-
-func drawPaintBox(p *wui.PaintBox, d drawer) {
-	x, y, w, h := p.Bounds()
-	if w > 0 && h > 0 {
-		d.DrawRect(x, y, w, h, wui.RGB(0, 0, 0))
-		d.TextRectFormat(x, y, w, h, "Paint Box", wui.FormatCenter, wui.RGB(0, 0, 0))
-	}
-}
-
-func drawIntUpDown(e *wui.IntUpDown, d drawer) {
-	x, y, w, h := e.Bounds()
-	if w > 0 && h > 0 {
-		d.PushDrawRegion(x, y, w, h)
-		d.DrawRect(x, y, w, h, wui.RGB(122, 122, 122))
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(255, 255, 255))
-
-		text := strconv.Itoa(e.Value())
-		color := wui.RGB(0, 0, 0)
-		d.TextOut(x+6, y+3, text, color)
-
-		d.FillRect(x+w-19, y, 19, h, wui.RGB(231, 231, 231))
-		d.DrawRect(x+w-19, y, 19, h, wui.RGB(172, 172, 172))
-		d.DrawRect(x+w-19+2, y+2, 19-4, h-4, wui.RGB(172, 172, 172))
-		d.DrawRect(x+w-19+2, y+h/2-1, 19-4, 2, wui.RGB(172, 172, 172))
-		y1 := y + h/4
-		d.Line(x+w-12, y1+2, x+w-12+5, y1+2, wui.RGB(0, 0, 0))
-		d.Line(x+w-11, y1+1, x+w-11+3, y1+1, wui.RGB(0, 0, 0))
-		d.Line(x+w-10, y1+0, x+w-10+1, y1+0, wui.RGB(0, 0, 0))
-		y2 := y + 3*h/4 - 2
-		d.Line(x+w-12, y2+0, x+w-12+5, y2+0, wui.RGB(0, 0, 0))
-		d.Line(x+w-11, y2+1, x+w-11+3, y2+1, wui.RGB(0, 0, 0))
-		d.Line(x+w-10, y2+2, x+w-10+1, y2+2, wui.RGB(0, 0, 0))
-		d.PopDrawRegion()
-	}
-}
-
-func drawFloatUpDown(e *wui.FloatUpDown, d drawer) {
-	x, y, w, h := e.Bounds()
-	if w > 0 && h > 0 {
-		d.PushDrawRegion(x, y, w, h)
-		d.DrawRect(x, y, w, h, wui.RGB(122, 122, 122))
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(255, 255, 255))
-
-		text := fmt.Sprintf("%."+strconv.Itoa(e.Precision())+"f", e.Value())
-		color := wui.RGB(0, 0, 0)
-		d.TextOut(x+6, y+3, text, color)
-
-		d.FillRect(x+w-19, y, 19, h, wui.RGB(231, 231, 231))
-		d.DrawRect(x+w-19, y, 19, h, wui.RGB(172, 172, 172))
-		d.DrawRect(x+w-19+2, y+2, 19-4, h-4, wui.RGB(172, 172, 172))
-		d.DrawRect(x+w-19+2, y+h/2-1, 19-4, 2, wui.RGB(172, 172, 172))
-		y1 := y + h/4
-		d.Line(x+w-12, y1+2, x+w-12+5, y1+2, wui.RGB(0, 0, 0))
-		d.Line(x+w-11, y1+1, x+w-11+3, y1+1, wui.RGB(0, 0, 0))
-		d.Line(x+w-10, y1+0, x+w-10+1, y1+0, wui.RGB(0, 0, 0))
-		y2 := y + 3*h/4 - 2
-		d.Line(x+w-12, y2+0, x+w-12+5, y2+0, wui.RGB(0, 0, 0))
-		d.Line(x+w-11, y2+1, x+w-11+3, y2+1, wui.RGB(0, 0, 0))
-		d.Line(x+w-10, y2+2, x+w-10+1, y2+2, wui.RGB(0, 0, 0))
-		d.PopDrawRegion()
-	}
-}
-
-func drawComboBox(c *wui.ComboBox, d drawer) {
-	x, y, w, h := c.Bounds()
-	if w > 0 && h > 0 {
-		d.PushDrawRegion(x, y, w, h)
-		d.DrawRect(x, y, w, h, wui.RGB(173, 173, 173))
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(225, 225, 225))
-		arrowX := x + w - 13
-		arrowY := y + 9
-		d.Line(arrowX, arrowY, arrowX+4, arrowY+4, wui.RGB(86, 86, 86))
-		d.Line(arrowX+4, arrowY+3, arrowX+8, arrowY-1, wui.RGB(86, 86, 86))
-		if w > 20 {
-			i := c.SelectedIndex()
-			items := c.Items()
-			if 0 <= i && i < len(items) {
-				text := items[i]
-				d.PushDrawRegion(x, y, w-20, h)
-				d.TextOut(x+4, y+4, text, wui.RGB(0, 0, 0))
-				d.PopDrawRegion()
-			}
-		}
-		d.PopDrawRegion()
-	}
-}
-
-func drawProgressBar(p *wui.ProgressBar, d drawer) {
-	x, y, w, h := p.Bounds()
-	if w > 0 && h > 0 {
-		d.PushDrawRegion(x, y, w, h)
-		d.DrawRect(x, y, w, h, wui.RGB(188, 188, 188))
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(230, 230, 230))
-		if p.MovesForever() {
-			if p.Vertical() {
-				filledH := (h - 2) / 2
-				d.FillRect(x+1, y+1+filledH/2, w-2, filledH, wui.RGB(0, 180, 40))
-			} else {
-				filledW := (w - 2) / 2
-				d.FillRect(x+1+filledW/2, y+1, filledW, h-2, wui.RGB(0, 180, 40))
-			}
-		} else {
-			if p.Vertical() {
-				filledH := int(float64(h-2)*p.Value() + 0.5)
-				d.FillRect(x+1, y+h-1-filledH, w-2, filledH, wui.RGB(0, 180, 40))
-			} else {
-				filledW := int(float64(w-2)*p.Value() + 0.5)
-				d.FillRect(x+1, y+1, filledW, h-2, wui.RGB(0, 180, 40))
-			}
-		}
-		d.PopDrawRegion()
-	}
-}
-
-func drawEditLine(e *wui.EditLine, d drawer) {
-	x, y, w, h := e.Bounds()
-	if w > 0 && h > 0 {
-		d.PushDrawRegion(x, y, w, h)
-		if e.Enabled() {
-			d.DrawRect(x, y, w, h, wui.RGB(122, 122, 122))
-		} else {
-			d.DrawRect(x, y, w, h, wui.RGB(204, 204, 204))
-		}
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(255, 255, 255))
-		if e.ReadOnly() || !e.Enabled() {
-			d.FillRect(x+2, y+2, w-4, h-4, wui.RGB(240, 240, 240))
-		}
-		text := e.Text()
-		if e.IsPassword() {
-			text = strings.Repeat("●", utf8.RuneCountInString(text))
-		}
-		color := wui.RGB(0, 0, 0)
-		if !e.Enabled() {
-			color = wui.RGB(109, 109, 109)
-		}
-		d.TextOut(x+6, y+3, text, color)
-		d.PopDrawRegion()
-	}
-}
-
-func drawTextEdit(t *wui.TextEdit, d drawer) {
-	x, y, w, h := t.Bounds()
-	if w > 0 && h > 0 {
-		d.PushDrawRegion(x, y, w, h)
-		if t.Enabled() {
-			d.DrawRect(x, y, w, h, wui.RGB(122, 122, 122))
-		} else {
-			d.DrawRect(x, y, w, h, wui.RGB(204, 204, 204))
-		}
-		d.FillRect(x+1, y+1, w-2, h-2, wui.RGB(255, 255, 255))
-		if !t.Enabled() {
-			d.FillRect(x+2, y+2, w-4, h-4, wui.RGB(240, 240, 240))
-		}
-		color := wui.RGB(0, 0, 0)
-		if !t.Enabled() {
-			color = wui.RGB(109, 109, 109)
-		}
-		if t.WordWrap() {
-			d.TextRectFormat(x+6, y+3, w-6, h-3, t.Text(), wui.FormatTopLeft, color)
-		} else {
-			d.TextOut(x+6, y+3, t.Text(), color)
-		}
-		d.PopDrawRegion()
-	}
-}
-
 type node interface {
 	Parent() wui.Container
 	Bounds() (x, y, width, height int)
@@ -1967,111 +1227,6 @@ func showPreview(parent, w *wui.Window, x, y int) {
 	}()
 
 	progress.ShowModal()
-}
-
-func generateCode(w *wui.Window, isPreview bool) []byte {
-	// TODO Remove the isPreview parameter once we can set window shortcuts
-	// through the UI and generate them. Once we have that, temporarily add this
-	// shortcut before generating the preview code and reset it afterwards, as
-	// is done with the window position.
-	var code bytes.Buffer
-	code.WriteString(`package main
-
-import "github.com/gonutz/wui/v2"
-
-func main() {`)
-
-	line := func(format string, a ...interface{}) {
-		fmt.Fprint(&code, "\n")
-		fmt.Fprintf(&code, format, a...)
-	}
-
-	name := names[w]
-	if name == "" {
-		name = defaultName(w)
-	}
-	writeControl(w, "", name, line)
-	line("")
-	if isPreview {
-		line(name + ".SetShortcut(" + name + ".Close, wui.KeyEscape)")
-	}
-	line(name + ".Show()")
-	code.WriteString("\n}")
-
-	formatted, err := format.Source(code.Bytes())
-	if err != nil {
-		panic("We generated wrong code: " + err.Error())
-	}
-	return formatted
-}
-
-func writeControl(c interface{}, parentName, name string, line func(format string, a ...interface{})) {
-	do := func(format string, a ...interface{}) {
-		line(name+format, a...)
-	}
-
-	var fontName string
-	if f, ok := c.(fonter); ok {
-		font := f.Font()
-		if font != nil {
-			fontName = name + "Font"
-			line(fontName + ", _ := wui.NewFont(wui.FontDesc{")
-			if font.Desc.Name != "" {
-				line("Name: %q,", font.Desc.Name)
-			}
-			if font.Desc.Height != 0 {
-				line("Height: %d,", font.Desc.Height)
-			}
-			if font.Desc.Bold {
-				line("Bold: true,")
-			}
-			if font.Desc.Italic {
-				line("Italic: true,")
-			}
-			if font.Desc.Underlined {
-				line("Underlined: true,")
-			}
-			if font.Desc.StrikedOut {
-				line("StrikedOut: true,")
-			}
-			line("})")
-			line("")
-		}
-	}
-
-	typeName := reflect.TypeOf(c).Elem().Name()
-	do(" := wui.New%s()", typeName)
-
-	if fontName != "" {
-		do(".SetFont(%s)", fontName)
-	}
-
-	setters := generateProperties(name, c)
-	for _, setter := range setters {
-		line("\t" + setter)
-	}
-	if parentName != "" {
-		line("%s.Add(%s)", parentName, name)
-	}
-	line("")
-
-	// TODO Generate ALL events.
-	if p, ok := c.(*wui.PaintBox); ok {
-		onPaint := event{p, "OnPaint"}
-		if events[onPaint] != "" {
-			do(".SetOnPaint(%s)", events[onPaint])
-		}
-	}
-
-	if con, ok := c.(wui.Container); ok {
-		for _, child := range con.Children() {
-			childName := names[child]
-			if childName == "" {
-				childName = defaultName(child)
-			}
-			writeControl(child, name, childName, line)
-		}
-	}
 }
 
 func cloneControl(c wui.Control) wui.Control {
@@ -2164,16 +1319,6 @@ func cloneControl(c wui.Control) wui.Control {
 	default:
 		panic("unhandled control type in cloneControl")
 	}
-}
-
-type enabler interface {
-	Enabled() bool
-	SetEnabled(bool)
-}
-
-type visibler interface {
-	Visible() bool
-	SetVisible(bool)
 }
 
 type fonter interface {
