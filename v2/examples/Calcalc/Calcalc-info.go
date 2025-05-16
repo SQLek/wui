@@ -12,6 +12,7 @@ func infoWindow() {
 	InfoWin.SetFont(InfoWinFont)
 	InfoWin.SetInnerSize(599, 401)
 	InfoWin.SetTitle("Info")
+	InfoWin.SetResizable(false)
 
 	panel1Font, _ := wui.NewFont(wui.FontDesc{
 		Name:   "Tahoma",
