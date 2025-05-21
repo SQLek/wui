@@ -1,0 +1,16 @@
+Check the extruder has filament in it and the hotend is heated to an correct temperature.
+
+Use a sharpie, pen etc. and mark the filament at 120mm from the closest to extruder point available.
+This is for easier measurment.
+
+Extrude 100mm of filament you should use this command: 
+G91;
+G1 E100 F60;
+
+Note 100mm as Extrude distance. Wait for your printer to finish extruding (it should take less than 2m).
+We are doing this slowly to get most precise results.
+
+
+Use the digital calipers to measure distance to the mark and substract it from 120.
+This is your actual extrude length ie. 120-22=98 or 120-18=102 so 98 or 102 is your value to enter.
+
