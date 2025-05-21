@@ -1,3 +1,4 @@
+// Package wui provides a Windows user interface library.
 package wui
 
 import (
@@ -8,13 +9,16 @@ import (
 	w32v3 "github.com/gonutz/w32/v3" // indirect
 )
 
-// TreeViewItem represents a single item in the tree view
+// TreeViewItem represents a single item in the tree view control.
+// Each item can have a text label, optional data, and child items.
 type TreeViewItem struct {
-	Text     string
-	Children []*TreeViewItem
-	Data     interface{}
+	Text     string          // The text label displayed for this item
+	Children []*TreeViewItem // Child items of this node
+	Data     interface{}     // Optional user data associated with this item
 }
 
+// NewTreeView creates and returns a new TreeView control.
+// The control is initialized with an empty list of items.
 func NewTreeView() *TreeView {
 	return &TreeView{
 		items:    make([]*TreeViewItem, 0),
@@ -22,6 +26,8 @@ func NewTreeView() *TreeView {
 	}
 }
 
+// TreeView is a control that displays hierarchical data in a tree structure.
+// It supports expanding/collapsing nodes and item selection.
 type TreeView struct {
 	textControl
 	items    []*TreeViewItem
@@ -31,14 +37,18 @@ type TreeView struct {
 
 var _ Control = (*TreeView)(nil)
 
+// canFocus returns true as TreeView can receive keyboard focus.
 func (*TreeView) canFocus() bool {
 	return true
 }
 
+// eatsTabs returns false as TreeView should not consume tab key events.
 func (*TreeView) eatsTabs() bool {
 	return false
 }
 
+// create initializes the TreeView control with the specified ID.
+// It sets up the control's appearance and initializes its items.
 func (t *TreeView) create(id int) {
 	t.textControl.create(
 		id,
@@ -56,6 +66,8 @@ func (t *TreeView) create(id int) {
 	}
 }
 
+// addItem adds a single item to the tree view.
+// It returns the handle to the created tree item.
 func (t *TreeView) addItem(parent w32v3.HTREEITEM, item *TreeViewItem) w32v3.HTREEITEM {
 	text, _ := syscall.UTF16PtrFromString(item.Text)
 
@@ -82,6 +94,7 @@ func (t *TreeView) addItem(parent w32v3.HTREEITEM, item *TreeViewItem) w32v3.HTR
 	return hItem
 }
 
+// AddItem adds a new item to the root level of the tree view.
 func (t *TreeView) AddItem(item *TreeViewItem) {
 	t.items = append(t.items, item)
 	if t.handle != 0 {
@@ -89,6 +102,7 @@ func (t *TreeView) AddItem(item *TreeViewItem) {
 	}
 }
 
+// Clear removes all items from the tree view.
 func (t *TreeView) Clear() {
 	t.items = nil
 	t.selected = nil
@@ -97,10 +111,12 @@ func (t *TreeView) Clear() {
 	}
 }
 
+// Items returns the current list of root-level items in the tree view.
 func (t *TreeView) Items() []*TreeViewItem {
 	return t.items
 }
 
+// SetItems replaces all items in the tree view with the provided items.
 func (t *TreeView) SetItems(items []*TreeViewItem) {
 	t.items = items
 	t.selected = nil
@@ -112,6 +128,8 @@ func (t *TreeView) SetItems(items []*TreeViewItem) {
 	}
 }
 
+// SelectedItem returns the currently selected item in the tree view.
+// Returns nil if no item is selected.
 func (t *TreeView) SelectedItem() *TreeViewItem {
 	if t.handle != 0 {
 		hItem := w32v3.HTREEITEM(w32.SendMessage(t.handle, w32v3.TVM_GETNEXTITEM, w32v3.TVGN_CARET, 0))
@@ -126,6 +144,8 @@ func (t *TreeView) SelectedItem() *TreeViewItem {
 	return t.selected
 }
 
+// SetSelectedItem sets the currently selected item in the tree view.
+// Note: This is currently not implemented.
 func (t *TreeView) SetSelectedItem(item *TreeViewItem) {
 	t.selected = item
 	if t.handle != 0 {
@@ -133,14 +153,17 @@ func (t *TreeView) SetSelectedItem(item *TreeViewItem) {
 	}
 }
 
+// OnSelect returns the current selection change callback function.
 func (t *TreeView) OnSelect() func(item *TreeViewItem) {
 	return t.onSelect
 }
 
+// SetOnSelect sets the callback function that is called when the selection changes.
 func (t *TreeView) SetOnSelect(f func(item *TreeViewItem)) {
 	t.onSelect = f
 }
 
+// handleNotification processes control-specific notifications.
 func (t *TreeView) handleNotification(cmd uintptr) {
 	if cmd == w32v3.TVN_SELCHANGED && t.onSelect != nil {
 		t.onSelect(t.SelectedItem())
