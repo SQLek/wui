@@ -359,12 +359,20 @@ type textEditControl struct {
 	cursorEnd   int
 }
 
+var textEditControls = make(map[uintptr]*textEditControl)
+
 func (c *textEditControl) create(id int, exStyle uint, className string, style uint) {
 	c.textControl.create(id, exStyle, className, style)
 	if c.cursorStart != 0 || c.cursorEnd != 0 {
 		c.setCursor(c.cursorStart, c.cursorEnd)
 	}
-	w32.SetWindowSubclass(c.handle, textEditSubclassProc, 0, uintptr(unsafe.Pointer(c)))
+	textEditControls[uintptr(c.handle)] = c
+	w32.SetWindowSubclass(c.handle, textEditSubclassProc, 0, uintptr(c.handle))
+}
+
+func (c *textEditControl) destroy() {
+	delete(textEditControls, uintptr(c.handle))
+	c.textControl.destroy()
 }
 
 var textEditSubclassProc = syscall.NewCallback(func(
@@ -374,20 +382,23 @@ var textEditSubclassProc = syscall.NewCallback(func(
 	subclassID uintptr,
 	refData uintptr,
 ) uintptr {
-	c := (*textEditControl)(unsafe.Pointer(refData))
+	c := textEditControls[refData]
+	if c == nil {
+		return w32.DefSubclassProc(window, msg, wParam, lParam)
+	}
+
 	switch msg {
 	case w32.WM_CHAR:
-		shift := w32.GetKeyState(w32.VK_SHIFT)&0x8000 != 0
 		if wParam == 1 {
 			// Ctrl+A was pressed - select all text.
 			c.SelectAll()
 			return 0
 		}
-		if wParam == 26 && !shift {
+		if wParam == 26 && !(w32.GetKeyState(w32.VK_SHIFT)&0x8000 != 0) {
 			// TODO Ctrl+Z was pressed - undo the last action.
 			//return 0
 		}
-		if wParam == 25 || wParam == 26 && shift {
+		if wParam == 25 || wParam == 26 && (w32.GetKeyState(w32.VK_SHIFT)&0x8000 != 0) {
 			// TODO Ctrl+Y of Ctrl+Shift+Z was pressed - redo the last action.
 			//return 0
 		}

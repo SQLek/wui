@@ -8,6 +8,8 @@ import (
 	w32v3 "github.com/gonutz/w32/v3" // indirect
 )
 
+var treeViewItems = make(map[uintptr]*TreeViewItem)
+
 // TreeViewItem represents a single item in the tree view
 type TreeViewItem struct {
 	Text     string
@@ -66,13 +68,7 @@ func (t *TreeView) addItem(parent w32v3.HTREEITEM, item *TreeViewItem) w32v3.HTR
 	insertStruct.ItemEx.Text = text
 
 	hItem := w32v3.HTREEITEM(w32.SendMessage(t.handle, w32v3.TVM_INSERTITEM, 0, uintptr(unsafe.Pointer(&insertStruct))))
-
-	// Store the item data
-	var tvItem w32v3.TVITEM
-	tvItem.Mask = w32v3.TVIF_PARAM
-	tvItem.Item = hItem
-	tvItem.LParam = uintptr(unsafe.Pointer(item))
-	w32.SendMessage(t.handle, w32v3.TVM_SETITEM, 0, uintptr(unsafe.Pointer(&tvItem)))
+	treeViewItems[uintptr(hItem)] = item
 
 	// Add children recursively
 	for _, child := range item.Children {
@@ -94,6 +90,7 @@ func (t *TreeView) Clear() {
 	t.selected = nil
 	if t.handle != 0 {
 		w32.SendMessage(t.handle, w32v3.TVM_DELETEITEM, 0, 0)
+		treeViewItems = make(map[uintptr]*TreeViewItem)
 	}
 }
 
@@ -116,11 +113,7 @@ func (t *TreeView) SelectedItem() *TreeViewItem {
 	if t.handle != 0 {
 		hItem := w32v3.HTREEITEM(w32.SendMessage(t.handle, w32v3.TVM_GETNEXTITEM, w32v3.TVGN_CARET, 0))
 		if hItem != 0 {
-			var item w32v3.TVITEM
-			item.Mask = w32v3.TVIF_PARAM
-			item.Item = hItem
-			w32.SendMessage(t.handle, w32v3.TVM_GETITEM, 0, uintptr(unsafe.Pointer(&item)))
-			t.selected = (*TreeViewItem)(unsafe.Pointer(item.LParam))
+			t.selected = treeViewItems[uintptr(hItem)]
 		}
 	}
 	return t.selected

@@ -15,7 +15,7 @@ type FileOpenDialog struct {
 	filterIndex int
 	initPath    string
 	title       string
-	defaultExt  string
+	// defaultExt  string
 }
 
 func NewFileOpenDialog() *FileOpenDialog {

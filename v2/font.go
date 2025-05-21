@@ -6,10 +6,10 @@ import (
 	"github.com/gonutz/w32/v2"
 )
 
-var NoExactFontMatch = errors.New("wui.NewFont: the desired font was not found in the system, a replacement is used")
+var ErrNoExactFontMatch = errors.New("wui.NewFont: the desired font was not found in the system, a replacement is used")
 
 // NewFont returns a font according to the given description and an error. The
-// error might be NoExactFontMatch in which case the returned Font is valid, but
+// error might be ErrNoExactFontMatch in which case the returned Font is valid, but
 // the system did not find an exact match. In case the creation fails, the
 // returned Font is nil and the error gives the reason.
 func NewFont(desc FontDesc) (*Font, error) {
@@ -47,7 +47,7 @@ func NewFont(desc FontDesc) (*Font, error) {
 	})
 	var err error
 	if !found {
-		err = NoExactFontMatch
+		err = ErrNoExactFontMatch
 	}
 
 	handle := w32.CreateFontIndirect(&logfont)

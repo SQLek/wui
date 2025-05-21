@@ -887,7 +887,7 @@ func (w *Window) onMsg(window w32.HWND, msg uint32, wParam, lParam uintptr) uint
 		return 0
 	case w32.WM_CLOSE:
 		if w.onCanClose != nil {
-			if w.onCanClose() == false {
+			if !w.onCanClose() {
 				return 0
 			}
 		}
@@ -905,7 +905,7 @@ func (w *Window) onMsg(window w32.HWND, msg uint32, wParam, lParam uintptr) uint
 
 func (w *Window) onWM_DRAWITEM(wParam, lParam uintptr) {
 	index := wParam
-	if 0 <= index && index < uintptr(len(w.controls)) {
+	if index < uintptr(len(w.controls)) {
 		if p, ok := w.controls[index].(*PaintBox); ok {
 			if p.onPaint != nil {
 				drawItem := ((*w32.DRAWITEMSTRUCT)(unsafe.Pointer(lParam)))

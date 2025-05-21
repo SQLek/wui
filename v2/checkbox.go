@@ -50,7 +50,6 @@ func (c *CheckBox) SetChecked(checked bool) {
 	if c.onChange != nil {
 		c.onChange(c.checked)
 	}
-	return
 }
 
 func toCheckState(checked bool) uintptr {
